@@ -2,7 +2,7 @@ import { defineConfig } from "@rspress/core";
 
 export default defineConfig({
   root: "docs",
-  base: "/sag-wiki/",
+  base: "/sag-wiki-docs/",
   lang: "zh",
   title: "SAG Wiki",
   description: "面向团队知识沉淀、检索与问答的开源 RAG 工作台。",
