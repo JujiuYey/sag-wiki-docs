@@ -1,64 +1,167 @@
 ---
 title: 快速开始
-description: 在本地启动 SAG Wiki 的基础设施、Go 服务和 React 前端。
+description: 使用 Docker Compose 快速启动 SAG Wiki 的本地基础设施，再运行 Go 服务和 React 前端。
 ---
 
 # 快速开始
 
-SAG Wiki 由 Go API、React Web 应用和一组本地基础设施组成。下面的流程会先准备 PostgreSQL、Redis、MinIO 与 Qdrant，再分别运行后端和前端。
+这份指南用于本地开发。SAG Wiki 需要 PostgreSQL、Redis、MinIO 和 Qdrant 四个基础设施服务。先启动这些服务，再启动主项目中的 Go API 和 React Web。
 
 ## 环境要求
 
 - Go 1.25.3+
 - Node.js 20.19+ 或 22.12+
 - pnpm 10+
-- PostgreSQL 15+
-- Redis 7+
-- MinIO
-- Qdrant
+- Docker Desktop 或 Docker Engine
+- Docker Compose v2+
 
-## 1. 准备基础设施
-
-SAG Wiki 使用以下服务：
-
-| 服务 | 默认地址 | 用途 |
-| --- | --- | --- |
-| PostgreSQL | `localhost:5432` | 业务数据 |
-| Redis | `localhost:6379` | 异步任务队列 |
-| MinIO | `localhost:9000` | 文档对象存储 |
-| MinIO Console | `localhost:9090` | 存储管理界面 |
-| Qdrant | `localhost:6333` | 向量与切片索引 |
-
-这些服务可以使用本地安装、云服务或你自己的容器环境运行。文档仓库不再维护一份 Compose 配置；只要服务能通过上面的地址访问即可。
-
-准备好 PostgreSQL 后，在 `sag-wiki` 主项目根目录执行数据库迁移：
+## 1. 获取项目
 
 ```bash
-createdb -h localhost -p 5432 -U postgres sag_wiki
-psql -h localhost -p 5432 -U postgres -d sag_wiki -f server/migrations/system/001_schema.sql
-psql -h localhost -p 5432 -U postgres -d sag_wiki -f server/migrations/wiki/001_schema.sql
-psql -h localhost -p 5432 -U postgres -d sag_wiki -f server/migrations/ai/001_schema.sql
-psql -h localhost -p 5432 -U postgres -d sag_wiki -f server/migrations/ai/002_schema.sql
+git clone https://github.com/JujiuYey/sag-wiki.git
+cd sag-wiki
 ```
 
-如果你的 PostgreSQL 运行在其他环境，请使用对应客户端执行相同的 SQL 文件。
+## 2. 启动本地基础设施
 
-下面的 `server`、`web` 和 `server/migrations` 路径都来自 `sag-wiki` 主项目，不是当前文档仓库。
+在 `sag-wiki` 项目根目录创建 `docker-compose.yml`，内容如下：
 
-## 2. 配置并启动 Go API
+```yaml
+services:
+  postgres:
+    image: postgres:15
+    container_name: postgres-server
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-dev-password}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio
+    container_name: minio-server
+    restart: always
+    ports:
+      - "9000:9000"
+      - "9090:9090"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-dev-password}
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9090"
+
+  qdrant:
+    image: qdrant/qdrant
+    container_name: qdrant-server
+    restart: always
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+
+  redis:
+    image: redis:7
+    container_name: redis-server
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+
+volumes:
+  postgres-data:
+  minio-data:
+  redis-data:
+```
+
+启动并查看服务状态：
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+这四个服务的默认地址和用途如下：
+
+| 服务 | 地址 | 用途 |
+| --- | --- | --- |
+| PostgreSQL | `localhost:5432` | 用户、权限、目录、文档和会话数据 |
+| Redis | `localhost:6379` | 异步文档处理和任务队列 |
+| MinIO | `localhost:9000` | 原始文档、附件和头像文件 |
+| MinIO Console | `localhost:9090` | 查看和管理对象存储 |
+| Qdrant | `localhost:6333` | 文档切片和向量检索 |
+
+检查服务是否可用：
+
+```bash
+curl http://localhost:6333/collections
+curl http://localhost:9000/minio/health/live
+docker compose exec redis redis-cli ping
+```
+
+如果要自定义本地密码，在 `docker compose up -d` 前设置环境变量：
+
+```bash
+export POSTGRES_PASSWORD='your-local-password'
+export MINIO_ROOT_USER='minioadmin'
+export MINIO_ROOT_PASSWORD='your-local-password'
+docker compose up -d
+```
+
+## 3. 初始化数据库
+
+迁移文件位于 `server/migrations/`，在主项目根目录执行：
+
+```bash
+docker compose exec postgres createdb -U postgres sag_wiki
+docker compose exec -T postgres psql -U postgres -d sag_wiki < server/migrations/system/001_schema.sql
+docker compose exec -T postgres psql -U postgres -d sag_wiki < server/migrations/wiki/001_schema.sql
+docker compose exec -T postgres psql -U postgres -d sag_wiki < server/migrations/ai/001_schema.sql
+docker compose exec -T postgres psql -U postgres -d sag_wiki < server/migrations/ai/002_schema.sql
+```
+
+如果数据库已经存在，`createdb` 报错时可以忽略，然后继续执行尚未应用的迁移。
+
+## 4. 配置并启动 Go API
 
 ```bash
 cd server
 cp .env.example .env
+```
+
+检查 `server/.env` 中的基础设施配置：
+
+```dotenv
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=local-dev-password
+DB_NAME=sag_wiki
+MINIO_ENDPOINT=localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=local-dev-password
+QDRANT_URL=http://localhost:6333
+REDIS_ADDR=localhost:6379
+```
+
+如果启动 Compose 时修改了用户名或密码，这里也要同步修改。然后启动 API：
+
+```bash
 go mod download
 go run main.go
 ```
 
-API 默认运行在 `http://localhost:8080`。首次启动前，请按本地环境修改 `server/.env`，填入 PostgreSQL、Redis、MinIO 和 Qdrant 的地址与凭据，并确认数据库迁移已经执行。
+API 默认运行在 `http://localhost:8080`。
 
-## 3. 启动 React 应用
+## 5. 配置并启动 React 应用
 
-新开一个终端：
+新开一个终端，在主项目根目录执行：
 
 ```bash
 cd web
@@ -69,16 +172,18 @@ pnpm dev
 
 Web 应用默认运行在 `http://localhost:5200`。
 
-## 4. 本地预览文档站
-
-如需本地预览当前文档站：
+## 6. 停止基础设施
 
 ```bash
-cd sag-wiki-docs
-pnpm install
-pnpm dev
+docker compose down
+```
+
+这不会删除数据卷。确认要清空本地数据库、对象存储和 Redis 数据时，才使用：
+
+```bash
+docker compose down -v
 ```
 
 ## 下一步
 
-阅读[系统架构](./architecture.mdx)，了解一次文档上传如何经过对象存储、任务队列、切片和向量索引，最终参与 RAG 回答。
+阅读[系统架构](./architecture.mdx)，了解文档如何经过对象存储、任务队列、切片和向量索引，最终参与 RAG 回答。
