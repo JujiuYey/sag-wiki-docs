@@ -27,8 +27,8 @@ html {
 
 body {
   margin: 0;
-  background: var(--site-paper);
-  color: var(--site-ink);
+  background: var(--rp-c-bg);
+  color: var(--rp-c-text-1);
 }
 
 body,
@@ -46,6 +46,25 @@ a {
   overflow: clip;
   background: var(--site-paper);
   color: var(--site-ink);
+}
+
+/* Keep Rspress document pages on its light/dark surface tokens. */
+.rp-doc-layout__container,
+.rp-doc-layout__doc-container,
+.rp-doc-layout__outline,
+.rp-doc-layout__sidebar {
+  background: var(--rp-c-bg);
+}
+
+.rp-doc-layout__doc-container {
+  color: var(--rp-c-text-1);
+}
+
+html.rp-dark .rp-doc-layout__container,
+html.rp-dark .rp-doc-layout__doc-container,
+html.rp-dark .rp-doc-layout__outline,
+html.rp-dark .rp-doc-layout__sidebar {
+  background: var(--rp-c-bg);
 }
 
 .landing-page a {
