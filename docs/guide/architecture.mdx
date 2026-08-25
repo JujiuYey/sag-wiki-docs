@@ -49,8 +49,12 @@ SAG Wiki 将知识管理、异步文档处理和检索问答拆成明确的服�
 sag-wiki/
 ├── web/       # React 前端应用
 ├── server/    # Go API、业务模块与基础设施适配
-├── site/      # Rspress 项目介绍与文档站
 └── docs/      # 设计记录和实现计划
+
+sag-wiki-docs/
+├── docs/      # Rspress 页面内容
+├── theme/     # 文档站主题
+└── .github/   # GitHub Pages 部署
 ```
 
 后端按 `app/{domain}` 组织业务模块，公共基础设施放在 `infrastructure/`，HTTP 聚合入口位于 `server/router/router.go`。
