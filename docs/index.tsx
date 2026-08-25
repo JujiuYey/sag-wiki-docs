@@ -25,10 +25,13 @@ export const frontmatter = {
 };
 
 const repoUrl = "https://github.com/JujiuYey/sag-wiki";
+const siteBase = "/sag-wiki-docs/";
+const gettingStartedUrl = `${siteBase}guide/getting-started`;
+const architectureUrl = `${siteBase}guide/architecture`;
 
 function Brand() {
   return (
-    <a className="site-brand" href="./" aria-label="返回 SAG Wiki 首页">
+    <a className="site-brand" href={siteBase} aria-label="返回 SAG Wiki 首页">
       <img src={logoUrl} alt="" />
       <span>SAG Wiki</span>
     </a>
@@ -44,13 +47,13 @@ function SiteHeader() {
           <a href="#workflow">工作流</a>
           <a href="#capabilities">核心能力</a>
           <a href="#architecture">架构</a>
-          <a href="./guide/getting-started">文档</a>
+          <a href={gettingStartedUrl}>文档</a>
         </nav>
         <div className="header-actions">
           <a className="icon-link" href={repoUrl} aria-label="在 GitHub 查看 SAG Wiki">
             <Github aria-hidden="true" />
           </a>
-          <a className="header-cta" href="./guide/getting-started">
+          <a className="header-cta" href={gettingStartedUrl}>
             开始部署
             <ArrowRight aria-hidden="true" />
           </a>
@@ -62,7 +65,7 @@ function SiteHeader() {
               <a href="#workflow">工作流</a>
               <a href="#capabilities">核心能力</a>
               <a href="#architecture">架构</a>
-              <a href="./guide/getting-started">文档</a>
+              <a href={gettingStartedUrl}>文档</a>
               <a href={repoUrl}>GitHub</a>
             </nav>
           </details>
@@ -196,7 +199,7 @@ export default function HomePage() {
                 从文档入库、权限管理到向量检索与来源追踪，把分散的团队知识变成可运营的问答工作台。
               </p>
               <div className="hero-actions">
-                <a className="primary-button" href="./guide/getting-started">
+                <a className="primary-button" href={gettingStartedUrl}>
                   查看快速开始
                   <ArrowRight aria-hidden="true" />
                 </a>
@@ -274,7 +277,7 @@ export default function HomePage() {
               <span className="section-kicker light">COMPOSABLE BY DESIGN</span>
               <h2><span className="heading-line">每类数据，</span><span className="heading-line">交给适合它的系统。</span></h2>
               <p>业务元数据、原始文件、任务状态和向量索引彼此独立，通过清晰的 Go 服务边界协作。</p>
-              <a href="./guide/architecture">
+                <a href={architectureUrl}>
                 阅读系统架构
                 <ArrowRight aria-hidden="true" />
               </a>
@@ -301,7 +304,7 @@ export default function HomePage() {
               <h2><span className="heading-line">从一份文档开始，</span><span className="heading-line">搭起你的知识工作台。</span></h2>
             </div>
             <div className="closing-actions">
-              <a className="primary-button" href="./guide/getting-started">开始部署<ArrowRight /></a>
+          <a className="primary-button" href={gettingStartedUrl}>开始部署<ArrowRight /></a>
               <a className="text-link" href={repoUrl}><Github />查看源码</a>
             </div>
           </div>
