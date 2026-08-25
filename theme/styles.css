@@ -67,6 +67,25 @@ html.rp-dark .rp-doc-layout__sidebar {
   background: var(--rp-c-bg);
 }
 
+/* Use a VS Code-like dark surface instead of near-black defaults. */
+html.rp-dark {
+  --rp-c-bg: #1e1e1e;
+  --rp-c-bg-soft: #252526;
+  --rp-c-bg-mute: #2d2d2d;
+  --rp-c-bg-alt: #181818;
+  --rp-c-divider: #3e3e42;
+  --rp-c-divider-light: #2d2d30;
+  --rp-c-text-0: #ffffff;
+  --rp-c-text-1: #d4d4d4;
+  --rp-c-text-2: #a6a6a6;
+  --rp-c-text-3: #6e6e6e;
+  --rp-c-text-4: #4e4e4e;
+  --rp-c-text-code: #9cdcfe;
+  --rp-c-text-code-bg: #252526;
+  --rp-c-text-code-border: #3e3e42;
+  --rp-c-link: #7cb7ff;
+}
+
 .landing-page a {
   color: inherit;
   text-decoration: none;
