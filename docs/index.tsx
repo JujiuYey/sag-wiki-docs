@@ -24,7 +24,7 @@ export const frontmatter = {
   pageType: "blank",
 };
 
-const repoUrl = "https://github.com/JujiuYey/sag-wiki";
+const profileUrl = "https://github.com/JujiuYey";
 const siteBase = "/sag-wiki-docs/";
 const gettingStartedUrl = `${siteBase}guide/getting-started`;
 const architectureUrl = `${siteBase}guide/architecture`;
@@ -50,7 +50,7 @@ function SiteHeader() {
           <a href={gettingStartedUrl}>文档</a>
         </nav>
         <div className="header-actions">
-          <a className="icon-link" href={repoUrl} aria-label="在 GitHub 查看 SAG Wiki">
+          <a className="icon-link" href={profileUrl} aria-label="在 GitHub 查看 JujiuYey">
             <Github aria-hidden="true" />
           </a>
           <a className="header-cta" href={gettingStartedUrl}>
@@ -66,7 +66,7 @@ function SiteHeader() {
               <a href="#capabilities">核心能力</a>
               <a href="#architecture">架构</a>
               <a href={gettingStartedUrl}>文档</a>
-              <a href={repoUrl}>GitHub</a>
+<a href={profileUrl}>GitHub</a>
             </nav>
           </details>
         </div>
@@ -203,7 +203,7 @@ export default function HomePage() {
                   查看快速开始
                   <ArrowRight aria-hidden="true" />
                 </a>
-                <a className="secondary-button" href={repoUrl}>
+                <a className="secondary-button" href={profileUrl}>
                   <Github aria-hidden="true" />
                   GitHub
                 </a>
@@ -305,7 +305,7 @@ export default function HomePage() {
             </div>
             <div className="closing-actions">
           <a className="primary-button" href={gettingStartedUrl}>开始部署<ArrowRight /></a>
-              <a className="text-link" href={repoUrl}><Github />查看源码</a>
+              <a className="text-link" href={profileUrl}><Github />查看源码</a>
             </div>
           </div>
         </section>
@@ -314,7 +314,7 @@ export default function HomePage() {
         <div className="site-shell footer-inner">
           <Brand />
           <p>Self-hosted RAG workspace for team knowledge.</p>
-          <a href={repoUrl}>GitHub</a>
+          <a href={profileUrl}>GitHub</a>
         </div>
       </footer>
     </div>

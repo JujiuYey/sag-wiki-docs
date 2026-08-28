@@ -1,0 +1,192 @@
+---
+title: RAG 链路
+description: 从文档上传、异步解析、切片、Embedding 到检索问答的完整链路。
+---
+
+# RAG 链路
+
+本页跟踪一份文档从被上传到能参与回答的全过程，以及回答时如何召回切片。代码事实以 `sag-wiki-server/` 仓库当前状态为准。
+
+## 入库与异步处理
+
+文档入库由两段组成：HTTP 请求只负责落盘与投递，解析与向量化由 Asynq Worker 异步执行。
+
+```text
+POST /api/wiki/documents/upload (DocumentHandler.Upload)
+  ├─> MinIO 写入原文件
+  ├─> PostgreSQL 插入 documents 记录（status=pending）
+  └─> 不自动投递：当前实现只把记录写入 pending 状态
+
+POST /api/wiki/documents/:id/reprocess (DocumentHandler.Reprocess)
+  ├─> 重新发布 document:process 任务
+  └─> Worker: HandleDocumentProcess
+        └─> DocumentProcessor.ReprocessDocument
+              ├─> chunkDAO.DeleteChunksByDocumentID
+              └─> DocumentProcessor.ProcessDocument
+                    ├─> MinIO 读全文
+                    ├─> Chunker.ChunkText
+                    ├─> 逐 chunk 调用 EmbeddingService.GetEmbedding
+                    ├─> ChunkDAO.UpsertChunks（Qdrant）
+                    └─> documentRepo.UpdateStatus(completed, chunk_count)
+```
+
+任务定义见 `sag-wiki-server/infrastructure/queue/task_queue.go`：
+
+- 任务类型常量：`TypeDocumentProcess = "document:process"`（仅此一种）。
+- 负载：`DocumentProcessPayload{DocumentID, FilePath, Filename, FolderID}`。
+- Worker 配置：`Concurrency: 10`，队列 `default: 1`。
+- 重试策略：`asynq.MaxRetry(3)`，未自定义 backoff，沿用 Asynq 默认指数退避。归档后可在 `GET /api/system/queue/tasks?state=archived` 查看。
+
+## 切片（Semantic Chunker）
+
+入口：`sag-wiki-server/app/ai/service/chunker.go`。`DocumentProcessor` 使用 `NewSemanticChunker(DefaultChunkerConfig())`。
+
+`ChunkerConfig` 默认值：
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `MaxChunkSize` | `800` | 单 chunk 字符数上限；段落合并到这个阈值就停 |
+| `MinChunkSize` | `200` | 小于这个值的 chunk 会被合并到下一段 |
+| `PreserveASCIIArt` | `true` | 识别 Box Drawing 字符并独立成块 |
+| `PreserveTables` | `true` | Markdown 表格独立成块 |
+
+`ChunkType` 枚举（`(ChunkType).String()` 形式）：
+
+- `paragraph`
+- `heading`
+- `table`
+- `code`
+- `list`（已声明，但当前检测逻辑未发出该类型）
+- `ascii_art`
+
+`parseDocument` 顺序识别：代码块（围栏）、Markdown 标题、`ASCII` 段落、Markdown 表格；其余并入段落。`processSections` 在段落集合内累积到 `MaxChunkSize`，遇到表格 / ASCII / 代码块立刻 flush。`mergeSmallChunks` 再把小于 `MinChunkSize` 的片段合并到下一段。
+
+## Embedding
+
+入口：`sag-wiki-server/app/ai/service/embedding.go`。`DocumentProcessor.ProcessDocument` 对每个 chunk 顺序调用 `GetEmbedding`，**目前没有走批量的 `BatchEmbeddings`**（函数已存在但未被处理器调用）。
+
+`GetEmbedding` 流程：
+
+1. `repo.FindDefaultByType(ctx, ModelTypeEmbedding)` 读取默认 Embedding 模型（`"embedding"`）。
+2. POST `${BaseURL}/embeddings`，body 为 `{ "input": "<text>", "model": "<Model>" }`，携带 `Authorization: Bearer <APIKey>`。
+3. HTTP 客户端超时 60s。
+
+读取的字段（`ModelConfig`）：
+
+- `BaseURL`
+- `Model`
+- `APIKey`
+
+> 注意：`EmbeddingService` 当前读取的是 `ai_model_config` 表（`app/ai/models/db/model_config.go` 定义），而 `/ai/platforms` 与 `/ai/models` 这套新接口写入的是 `ai_model_providers` / `ai_models`（`migrations/ai/002_schema.sql`）。两个存储层尚未打通，新增模型需要走旧表或在 `EmbeddingService` 内补齐读取逻辑。
+
+`ValidateChunkSize(vectorDim)` 只接受 `1024` 或 `2048`，与 `infrastructure/qdrant/qdrant_client.go` 中 `VectorParams{Size:1024, Distance:Distance_Cosine}` 保持一致。
+
+## Qdrant 写入
+
+入口：`sag-wiki-server/infrastructure/qdrant/chunk_dao.go`。
+
+- Collection 名：`ChunkCollectionName = "documents"`，`NewQdrantClient` 启动时 `EnsureCollection` 自动建集合，维度 1024、距离 `Cosine`。
+- `UpsertChunks` 写入的 payload 字段：`chunk_id`、`document_id`、`chunk_index`、`chunk_text`、`chunk_size`、`filename`、`folder_id`。
+- 删除：`DeleteChunksByDocumentID(ctx, docID)` 是 `ReprocessDocument` 的第 0 步，避免新旧 chunk 混在一起。
+
+## 检索与权限过滤
+
+入口：`sag-wiki-server/app/ai/service/retrieval.go`，依赖 `app/wiki/repository/folder_expander.go` + `folder_permission.go`。
+
+`RetrievalService.Search` 构造 Qdrant 过滤器：
+
+| 入参 | 过滤器构造 |
+| --- | --- |
+| `DocumentID != ""` | 单条件 `Must(document_id = req.DocumentID)` |
+| `FolderID != ""` | 调用 `FolderExpander.ExpandAndFilter` 拿到当前用户被授权的 folder 子集，构建 `Should`（OR）`folder_id = <id>` 列表 |
+| 两者都为空 | 不加过滤，整库搜索 |
+
+`FolderExpander.ExpandAndFilter` 步骤：
+
+1. `folderRepo.GetAllSubFolderIDs(parentID)` 用 PostgreSQL `WITH RECURSIVE` 收集所有后代 folder。
+2. `permissionRepo.BatchCheckPermissions(ctx, allFolderIDs, userID)` 用 `IN (...)` 过滤出当前用户至少有一条授权的 folder。
+3. 把结果回传给 `RetrievalService` 构造 OR 过滤。
+
+未命中任何 folder 时直接返回空切片，不报错。
+
+## RAG Chat 链路
+
+入口：`sag-wiki-server/app/ai/handlers/chat.go`，路由 `POST /api/ai/chat`。
+
+请求体：
+
+```json
+{
+  "query": "必填",
+  "folder_id": "可选",
+  "document_id": "可选"
+}
+```
+
+`Chat` 处理顺序：
+
+1. `ensureAgent(ctx)` 懒加载 Agent；如果没有默认模型配置返回 `500 未配置默认模型，请先在系统设置中添加模型配置`。
+2. 若 `folder_id` 或 `document_id` 非空且 `retrievalService` 存在：
+   - 从 `c.Locals("user_id")` 取用户 ID。
+   - 构造 `SearchRequest{Query, FolderID, DocumentID, UserID, Limit: 10}` 调 `RetrievalService.Search`。
+   - 检索结果按顺序拼成中文 Prompt（仅注入 chunk 文本，不带 ID / 分数 / 文件名）：
+
+     ```text
+     以下是与问题相关的参考资料：
+     【参考资料 1】
+     <chunk text>
+     【参考资料 2】
+     ...
+     请基于以上参考资料回答用户问题。如果参考资料中没有相关信息，请基于已有知识回答。
+     用户问题：<original query>
+     ```
+   - 拼好的文本作为新的 `query` 送进 Agent。
+3. `agentRunner.Query(ctx, query)` 拿到 `*adk.AsyncIterator[*adk.AgentEvent]`。
+4. 设置 SSE 响应头（`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`Transfer-Encoding: chunked`）。
+5. `c.Context().SetBodyStreamWriter` 注册手写的 `writeAgentStreamSSE` 输出流；每个 chunk 都 `Flush()`。Fiber handler 立即返回 `nil`。
+
+### SSE 事件
+
+`writeAgentStreamSSE` 输出形如 `data: <json>\n\n`，JSON 结构：
+
+```ts
+type StreamChunkEvent =
+  | { type: "stream_chunk"; content?: string; agent?: string }
+  | { type: "tool_result_chunk"; content?: string; tool_calls?: unknown[]; agent?: string }
+  | { type: "message"; agent?: string; tool_calls?: unknown[] }
+  | { type: "tool_result"; agent?: string; tool_calls?: unknown[] }
+  | { type: "action"; action?: "exit" | "transfer"; content?: string }
+  | { type: "error"; content?: string };
+```
+
+触发时机：
+
+| `type` | 触发条件 |
+| --- | --- |
+| `error` | 迭代器返回错误，或流中途 `Recv()` 失败 |
+| `stream_chunk` | Agent 流式输出助手 token |
+| `tool_result_chunk` | 工具调用增量结果 |
+| `message` | 助手完整消息聚合（含 `tool_calls`） |
+| `tool_result` | 工具完整结果 |
+| `action: "exit"` | `event.Action.Exit == true` |
+| `action: "transfer"` | `event.Action.TransferToAgent != nil` |
+| `[DONE]` | 迭代器自然结束（纯文本 `data: [DONE]\n\n`） |
+
+### Agent 与工具
+
+`app/ai/model/agent.go` 通过 `adk.NewChatModelAgent` 构建 `SystemManager` Agent，注册 15 个工具（`app/ai/tools/system.go`），分类如下：
+
+- 用户：`search_user` / `get_user` / `create_user` / `update_user` / `delete_user`
+- 部门：`list_departments` / `get_department` / `create_department` / `update_department` / `delete_department`
+- 角色：`list_roles` / `get_role` / `create_role` / `update_role` / `delete_role`
+
+所有工具通过 `utils.InferTool` 与静态类型（`SearchUserInput`、`CreateUserOutput` 等）绑定，jsonschema 标注供模型识别。
+
+聊天模型读取的是 `app/ai/models/db/model_config.go` 的 `ModelConfig` 默认行（`BaseURL` / `Model` / `APIKey` / `Temperature` / `TopP`）。`app/ai/handlers/chat.go` 不会自动 fallback 到 `/ai/models` 表。
+
+## 调试提示
+
+- 想观察任务：`GET /api/system/queue/stats?queue=default` 与 `GET /api/system/queue/tasks?queue=default&state=retry`。
+- 想强制重跑：`POST /api/wiki/documents/:id/reprocess`，会先清 Qdrant 再走完整链路。
+- 想看切片：`GET /api/wiki/documents/:id/chunks`，从 Qdrant 拉 payload。
+- 想直接验证检索：Bun model + repository 层独立可测；前端不参与。

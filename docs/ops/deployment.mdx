@@ -1,0 +1,41 @@
+---
+title: 部署
+description: 自托管部署建议：Compose 模板、反向代理、HTTPS 与最小资源估算。
+---
+
+# 部署
+
+> TODO：补充生产 Compose 模板、反向代理（Nginx/Caddy）示例与最小硬件建议。
+
+## 拓扑
+
+```text
+Internet
+  └─> 反向代理 (HTTPS / 静态资源)
+        ├─> sag-wiki-app 静态资源
+        └─> sag-wiki-server (Fiber :8080)
+              ├─> PostgreSQL
+              ├─> MinIO
+              ├─> Redis
+              └─> Qdrant
+```
+
+## Compose
+
+- 复用快速开始中的 PostgreSQL / MinIO / Redis / Qdrant 服务定义。
+- 加上 `sag-wiki-server` 与前端静态服务（如 Nginx 提供 dist）。
+- 数据卷：`postgres-data`、`minio-data`、`redis-data`、`qdrant_storage`。
+
+## 鉴权与凭据
+
+- 生产环境必须替换 `JWT_SECRET`、`DEFAULT_PASSWORD`、PostgreSQL/MinIO/Qdrant 密码。
+- 后端 `.env` 不入 Git，使用部署平台 secret 管理。
+
+## 反向代理
+
+- 前端静态资源直接由 Nginx / Caddy 提供。
+- `/api/*` 反代到 `sag-wiki-server:8080`，保持 SSE 长连接与 `text/event-stream` 响应头。
+
+## CORS
+
+部署前修改 `router/router.go` 中 `AllowOrigins` 为生产前端域名。

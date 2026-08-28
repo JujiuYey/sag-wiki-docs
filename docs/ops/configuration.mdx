@@ -1,0 +1,42 @@
+---
+title: 环境变量
+description: 后端 .env 配置项、前端 VITE_* 变量与默认值参考。
+---
+
+# 环境变量
+
+> TODO：补充分组表格、必填项标记、生产环境注意事项。
+
+## 后端（sag-wiki-server/.env）
+
+来源 `sag-wiki-server/.env.example`：
+
+| 变量 | 默认/示例 | 说明 |
+| --- | --- | --- |
+| `DB_HOST` | `localhost` | PostgreSQL 主机 |
+| `DB_PORT` | `5432` | 端口 |
+| `DB_USER` | `postgres` | 用户名 |
+| `DB_PASSWORD` | `your_password_here` | 必填，生产必须改 |
+| `DB_NAME` | `sag_wiki` | 库名 |
+| `DB_SSLMODE` | `disable` | 本地默认；生产用 `require` 等 |
+| `BUNDEBUG` | `1` | Bun 调试日志开关 |
+| `MINIO_ENDPOINT` | `localhost:9000` | MinIO 地址 |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | `minioadmin` | MinIO 凭据 |
+| `MINIO_USE_SSL` | `false` | 是否 HTTPS |
+| `MINIO_BUCKET_NAME` | `documents` | 桶名 |
+| `QDRANT_URL` | `http://localhost:6333` | Qdrant 地址 |
+| `QDRANT_API_KEY` | `qdrant_password` | Qdrant API Key（如有） |
+| `REDIS_ADDR` | `localhost:6379` | Redis 地址 |
+| `REDIS_PASSWORD` | 空 | 如启用 ACL 必填 |
+| `REDIS_DB` | `0` | DB 编号 |
+| `JWT_SECRET` | 占位 | 必填，生产用长随机字符串 |
+| `DEFAULT_PASSWORD` | `123456` | 初始账号默认密码 |
+
+## 前端（sag-wiki-app/.env）
+
+- `VITE_API_BASE_URL=http://localhost:8080`：后端基础地址。
+- 生产部署时改为实际域名。
+
+## CORS
+
+后端 `router/router.go` 中 `AllowOrigins` 当前硬编码为 `http://localhost:5200`，跨域部署前需要改成实际前端域名。

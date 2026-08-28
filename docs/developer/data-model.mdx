@@ -1,0 +1,203 @@
+---
+title: 数据模型与迁移
+description: PostgreSQL schema、迁移文件分布与新增字段的修改流程。
+---
+
+# 数据模型与迁移
+
+本页基于 `sag-wiki-server/migrations/` 当前 SQL 与 Bun models 的真实状态。所有表名、字段、约束均与代码对应；`migrations/ai/002_schema.sql` 已经使用 `IF NOT EXISTS` 保证可重复执行。
+
+## 迁移分布
+
+```text
+migrations/
+├── system/001_schema.sql    # 用户、角色、部门、关联表 + 种子数据
+├── wiki/001_schema.sql      # 文件夹、文件夹授权、文档
+├── ai/001_schema.sql        # Agent / RAG 会话与消息
+└── ai/002_schema.sql        # 模型 Provider / Model 元数据
+```
+
+执行顺序固定：`system` → `wiki` → `ai/001` → `ai/002`。新迁移按 `00x_*.sql` 递增并落在正确子目录。
+
+## 总览
+
+```text
+sys_users ─┬── sys_user_roles      ── sys_roles
+           └── sys_user_departments ─ sys_departments (self-tree)
+
+wiki_folders (self-tree)
+   ├── wiki_folder_permissions ─┬── sys_users
+   │                          └── sys_departments
+   └── wiki_documents ─ uploaded_by → sys_users
+            └─ referenced by ai_rag_sessions.document_id
+
+ai_agent_sessions ── ai_agent_messages
+ai_rag_sessions   ── ai_rag_messages
+ai_model_providers ── ai_models
+
+Qdrant collection "documents"（1024 维、Distance_Cosine）：
+  payload { chunk_id, document_id, chunk_index, chunk_text,
+            chunk_size, filename, folder_id }
+```
+
+## System（`migrations/system/001_schema.sql`）
+
+5 张表 + 种子数据（3 角色、3 部门、3 用户，密码 `bcrypt("123456")`）。
+
+### `sys_users`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | PK | |
+| `username` | UNIQUE | 登录用 |
+| `email` | UNIQUE | |
+| `password` | varchar(255) | bcrypt |
+| `full_name` | text | |
+| `avatar` | text | |
+| `status` | text | CHECK `active|inactive|suspended` |
+| `created_at` / `updated_at` | timestamp | |
+
+### `sys_roles`
+
+`id`、`name`（UNIQUE）、`description`、时间戳。种子：`admin`、`user`、`manager`。
+
+### `sys_departments`
+
+`id`、`name`、`description`、`parent_id`（自引用）、时间戳；`name` 与 `parent_id` 有索引。种子：`技术部`、`产品部`、`运营部`。
+
+### `sys_user_roles` / `sys_user_departments`
+
+关联表，都带 `UNIQUE(user_id, role_id)` / `UNIQUE(user_id, department_id)`。后者有 `is_primary` 标记主部门，回写到 `users.primary_department_id`。
+
+## Wiki（`migrations/wiki/001_schema.sql`）
+
+3 张表，构成知识库。
+
+### `wiki_folders`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | PK | |
+| `name` | text | 索引 |
+| `description` | text | |
+| `parent_id` | FK `wiki_folders.id` ON DELETE CASCADE | 自引用树 |
+| `user_id` | FK `sys_users.id` | 所属用户 |
+| `created_by` / `updated_by` | FK `sys_users.id` | |
+| `created_at` / `updated_at` | timestamp | |
+
+### `wiki_folder_permissions`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | PK | |
+| `folder_id` | FK `wiki_folders.id` | |
+| `user_id` | FK `sys_users.id`（可空） | |
+| `department_id` | FK `sys_departments.id`（可空） | |
+| `permission_type` | text | `manage|edit|read`，默认 `read` |
+
+CHECK：`user_id` 与 `department_id` 至少一个非空；UNIQUE(folder_id, user_id) 与 UNIQUE(folder_id, department_id) 分别约束两种授权路径。
+
+### `wiki_documents`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | PK | |
+| `filename` | text | |
+| `file_size` | bigint | |
+| `content_type` | text | 默认 `text/markdown` |
+| `file_path` | text | MinIO 对象路径 |
+| `folder_id` | FK `wiki_folders.id` ON DELETE CASCADE | |
+| `uploaded_by` | FK `sys_users.id` | |
+| `status` | text | `pending|processing|completed|failed` |
+| `chunk_count` | int | 处理完成后回填 |
+| `error_message` | text | 失败原因 |
+| `created_at` / `updated_at` | timestamp | |
+
+索引：`status`、`created_at DESC`、`folder_id`、`uploaded_by`。
+
+## AI（`migrations/ai/001_schema.sql`）
+
+4 张表，覆盖会话与消息存储。
+
+### `ai_agent_sessions`
+
+`id`、`title`、`user_id`（FK `sys_users`）、`message_count`、时间戳。
+
+### `ai_agent_messages`
+
+`id`、`session_id`（FK `ai_agent_sessions`，级联删除）、`role`（`user|assistant`）、`content`、`tool_used`、`tool_result`（JSONB，GIN 索引）、`prompt_tokens`、`completion_tokens`、`total_tokens`、时间戳。
+
+触发器 `update_agent_session_message_count_trigger`：INSERT/DELETE 时回写 `ai_agent_sessions.message_count`。
+
+### `ai_rag_sessions`
+
+`id`、`title`、`user_id`（FK `sys_users`）、`folder_id`（FK `wiki_folders`，**NOT NULL**）、`document_id`（FK `wiki_documents`，可空）、`message_count`、时间戳。
+
+### `ai_rag_messages`
+
+`id`、`session_id`（FK `ai_rag_sessions`，级联删除）、`role`、`content`、`retrieved_chunks`（JSONB，GIN 索引）、`relevance_score`、`prompt_tokens`、`completion_tokens`、`total_tokens`、时间戳。
+
+触发器 `update_rag_session_message_count_trigger`：同上回写。
+
+## AI 元数据（`migrations/ai/002_schema.sql`）
+
+2 张表，`IF NOT EXISTS` 保证可重复执行。
+
+### `ai_model_providers`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | PK | |
+| `provider_type` | text | `openai` / `deepseek` / `dashscope` / `custom` |
+| `name` | UNIQUE | 显示名 |
+| `default_base_url` | text | |
+| `base_url` | text | 可覆盖默认 |
+| `api_key_ciphertext` | text | AES-GCM 密文 |
+| `api_key_hint` | text | 用于 UI 提示（不全量展示） |
+| `model_list_path` | text | 默认 `/models` |
+| `auth_scheme` | text | CHECK `bearer|api-key|basic|custom` |
+| `extra_headers` | JSONB | CHECK JSONB |
+| `docs_url` / `api_key_url` | text | 文档与申请链接 |
+| `is_enabled` | bool | |
+| `sort_order` | int | |
+| `last_model_sync_at` | timestamp | |
+| `metadata` | JSONB | |
+| `created_at` / `updated_at` | timestamp | |
+
+### `ai_models`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | PK | |
+| `provider_id` | FK `ai_model_providers.id` | 级联删除 |
+| `model_name` | text | 与 `provider_id` 联合 UNIQUE |
+| `display_name` | text | |
+| `model_type` | text | CHECK `chat|embedding|rerank` |
+| `capabilities` | JSONB | |
+| `source` | text | CHECK `remote|manual` |
+| `status` | text | CHECK `active|inactive` |
+| `last_synced_at` | timestamp | |
+| `metadata` | JSONB | |
+| `created_at` / `updated_at` | timestamp | |
+
+## Qdrant（向量存储）
+
+- Collection 名：`documents`（`infrastructure/qdrant/chunk_dao.go` 中 `ChunkCollectionName`、`infrastructure/qdrant/qdrant_client.go` 中 `CollectionName`）。
+- 维度：`VectorParams{Size: 1024, Distance: Distance_Cosine}`。`Chunker.ValidateChunkSize(vectorDim)` 只接受 1024 或 2048。
+- Payload：`chunk_id`、`document_id`、`chunk_index`、`chunk_text`、`chunk_size`、`filename`、`folder_id`。
+- 索引：实际生产环境建议对 `document_id`、`folder_id` 加 payload index，代码目前未做此优化。
+
+## 已知差异
+
+- `EmbeddingService` 与 `ChatHandler` 读旧表 `ai_model_config`（`app/ai/models/db/model_config.go`）。该表**当前不存在**于 `migrations/` 中，意味着这两个能力首次跑会失败直到补齐建表 SQL。
+- `002_schema.sql` 写入的 Provider / Model 不会被 Embedding / Chat 自动读取，需要在两个 service 内补读取逻辑，或在文档中说明手动回填。
+- `wiki_documents.error_message` 在 `Reprocess` 失败时被写入；UI 需要在文档列表上展示。
+
+## 修改流程
+
+1. 在对应子目录新增 `00x_*.sql`，保证可幂等（`IF NOT EXISTS`、`ON CONFLICT`）或明确依赖顺序。
+2. 同步修改 Bun model（`app/{domain}/models/db/`）与 repository（`app/{domain}/repository/`）。
+3. 同步更新前端类型（`sag-wiki-app/src/types/`）与 API 封装（`sag-wiki-app/src/api/`）。
+4. 更新本文档对应表格。
+5. 不要删除既有字段；如需重构走"新增 + 旧字段过渡 + 迁移脚本回填"路径。
+6. 涉及 `ai_model_config` 的修改需要补一份 `003_schema.sql`，否则本地 Embedding / Chat 不可用。

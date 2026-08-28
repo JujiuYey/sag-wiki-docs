@@ -1,0 +1,317 @@
+---
+title: 前端架构
+description: React 19 + Vite 7 + TanStack Router/Query + Zustand + Tailwind 4 的分层与约定。
+---
+
+# 前端架构
+
+代码仓库：`sag-wiki-app/`。本页基于当前真实结构，覆盖路由、请求层、状态、API 模块、组件分层与测试组织。
+
+## 技术栈
+
+- React 19 + Vite 7 + TypeScript（`tsconfig.{json,app.json,node.json}`）
+- `@tanstack/react-router` + `@tanstack/router-plugin`（文件路由，自动生成 `src/routeTree.gen.ts`）
+- `@tanstack/react-query` + `react-query-devtools`
+- `zustand`（含 `persist` 中间件）
+- Tailwind CSS 4（`@tailwindcss/vite`）
+- Radix UI、`class-variance-authority`、`clsx`、`tailwind-merge`、`sonner`、`next-themes`
+- Tiptap 3（`@tiptap/react` + 18 个扩展）+ `tiptap-markdown` + `lowlight` + `shiki`
+- Vercel AI SDK（`ai`），AI Elements 组件在 `src/components/ai-elements/`
+- Vitest + `@testing-library/{react,jest-dom}` + `jsdom`
+
+## 顶层目录
+
+```text
+sag-wiki-app/
+├── public/                 # 静态资源
+├── src/
+│   ├── routes/             # 文件路由（不要手改 routeTree.gen.ts）
+│   ├── pages/              # 页面业务实现
+│   │   ├── ai/             # rag-chat / model-config
+│   │   ├── common/         # account / app-setting
+│   │   ├── dashboard/
+│   │   ├── errors/
+│   │   ├── login/
+│   │   ├── system/         # agent / department / role / user / queue
+│   │   └── wiki/           # folders / documents / tiptap-editor
+│   ├── api/                # 按域封装的请求模块
+│   │   ├── auth/
+│   │   ├── ai/
+│   │   ├── system/
+│   │   └── wiki/
+│   ├── components/
+│   │   ├── ui/             # shadcn / Radix 基础组件
+│   │   ├── sag-ui/         # SAG Wiki 业务组件
+│   │   ├── ai-elements/    # AI 渲染原子组件
+│   │   └── theme-provider.tsx
+│   ├── layout/             # 登录后应用壳
+│   ├── stores/             # Zustand 状态
+│   ├── hooks/              # 全局 hooks
+│   ├── utils/request/      # Axios 拦截器 + SSE 助手
+│   ├── lib/                # 通用工具（theme、utils）
+│   ├── types/              # 共享类型
+│   ├── assets/             # 图标、Logo
+│   ├── test/               # Vitest setup 与工具
+│   ├── main.tsx
+│   ├── routeTree.gen.ts    # 自动生成，禁止手改
+│   └── App.tsx
+├── vite.config.ts
+├── tsconfig.json
+├── index.html
+└── package.json
+```
+
+## 路由（`src/routes/`）
+
+文件路由，由 `@tanstack/router-plugin` 自动生成树。**不要手改 `src/routeTree.gen.ts`**。
+
+| 路由文件 | URL | 挂载 |
+| --- | --- | --- |
+| `__root.tsx` | — | 根布局；`notFoundComponent = NotFoundPage`（`pages/errors/404`） |
+| `login.tsx` | `/login` | `LoginPage` |
+| `_layout.tsx` | pathless | **保护布局**：`beforeLoad` 检查 `accessToken`，缺失 `redirect({ to: "/login" })`；存在但 `user == null` 时自动 `getCurrentUser()` |
+| `_layout/index.tsx` | `/` | `DashboardPage` |
+| `_layout/account.tsx` | `/account` | `AccountPage` |
+| `_layout/app-setting.tsx` | `/app-setting` | `AppSettingPage` |
+| `_layout/rag-chat.tsx` | `/rag-chat` | `RagChatPage` |
+| `_layout/model-config.tsx` | `/model-config` | `ModelConfigPage` |
+| `_layout/wiki/folders.tsx` | `/wiki/folders` | `FoldersPage` |
+| `_layout/wiki/documents.tsx` | `/wiki/documents` | `DocumentsPage` |
+| `_layout/wiki/tiptap-editor.tsx` | `/wiki/tiptap-editor` | `CanvasTiptapPage`（`validateSearch: { docId? }`） |
+| `_layout/system/agent.tsx` | `/system/agent` | `AgentPage` |
+| `_layout/system/department.tsx` | `/system/department` | `DepartmentPage` |
+| `_layout/system/role.tsx` | `/system/role` | `RolePage` |
+| `_layout/system/user.tsx` | `/system/user` | `UserPage` |
+| `_layout/system/queue.tsx` | `/system/queue` | `QueuePage` |
+
+`_layout.tsx` 不在组件层用 `<Navigate>` 重定向，而是用 TanStack Router 的 `beforeLoad` 抛 `redirect`，避免渲染闪烁。
+
+## 请求层（`src/utils/request/`）
+
+两个文件：
+
+### `index.ts` — Axios 实例与拦截器
+
+```ts
+const instance = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE_URL,
+  timeout: 30000,
+});
+```
+
+- **请求拦截器**：注入 `Authorization: Bearer <accessToken>`（从 `useAuthStore.getState()` 读）。`FormData` 请求删 `Content-Type`，让浏览器加 multipart 边界。
+- **响应拦截器**（仅错误路径）：
+  - `axios.isCancel` → toast `"请求已取消"`。
+  - `error.code === "ECONNABORTED"` → toast `"请求超时"`，抛 `new Error("请求超时")`。
+  - `status === 401` 且不是 `/auth/login` / `/auth/refresh` 且原请求未标记 `_retry` → 走刷新流程。
+  - 其他 → toast `"请求失败"` + 响应里的 `message`。
+- **响应包络**：`{ code: number; data: T; message: string }`。
+- **`unwrap<T>(promise)`**：`code === 0` 时返回 `data`；否则 toast + 抛 `Error(message)`。
+- **`request`**：暴露 `get/post/put/delete<T>`，全部走 `unwrap`。
+
+### 401 刷新流程（单飞）
+
+模块级变量：
+
+```ts
+let isRefreshing = false;
+let refreshSubscribers: ((token: string) => void)[] = [];
+```
+
+1. 第一个 401 触发 `refreshToken()`：直接 POST `/auth/refresh`，成功后 `useAuthStore.setAccessToken(newToken)`，并通过 `onRefreshed` 通知所有等待中的请求。
+2. 同时到达的 401 会订阅 `refreshSubscribers`，等新 token 后用新 header 重发原请求。
+3. `refreshToken()` 返回 `null` 时调用 `useAuthStore.clearAuth()` + `window.location.href = "/login"`，抛 `new Error("登录已过期")`。
+4. 原请求带 `_retry = true` 防止递归触发。
+
+### `sse.ts` — SSE 助手
+
+`src/utils/request/sse.ts` 提供 `sseRequest()`，使用原生 `fetch` + `ReadableStream`。目前只在 `pages/system/agent/_hooks/agent-chat.ts` 中被使用。
+
+### Token 注入
+
+- 普通请求：请求拦截器自动加。
+- SSE / 原生 fetch（`api/ai/chat.ts` 的 `chatStream`、`utils/request/sse.ts`）：手动从 `useAuthStore.getState().accessToken` 取，自己加 header。
+
+## 状态（`src/stores/`）
+
+### `auth.ts`
+
+```ts
+interface AuthState {
+  accessToken: string | null;
+  refreshToken: string | null;
+  user: UserInfo | null;
+  setTokens(access, refresh): void;
+  setAccessToken(token): void;
+  setUser(user): void;
+  clearAuth(): void;
+}
+```
+
+- `persist({ name: "auth-storage" })` → 默认 localStorage。
+- `UserInfo`（`src/types/auth.ts`）：`{ id, username, email, full_name?, avatar?, status, roles: string[], primary_department_id? }`。
+- **没有** `login` / `logout` action：登录逻辑在 `pages/login/login-form.tsx`（直接调 `setTokens` + `setUser` + `navigate`）；退出登录由响应拦截器调 `clearAuth()`。
+
+### `app.ts`
+
+```ts
+interface AppSettings { autoSave: boolean; theme: "system" | "light" | "dark" }
+```
+
+`persist({ name: "app-setting" })`，actions `updateSettings`、`resetSettings`。
+
+## API 模块（`src/api/`）
+
+按后端领域分文件；调用方拿到的都是 `unwrap` 后的 `T`，不是 `ApiResponse<T>`。`src/api/index.ts` 桶文件只导出常用模块：
+
+```ts
+export * from "./auth/auth";
+export * from "./system/department";
+export * from "./system/queue";
+export * from "./system/role";
+export * from "./system/user";
+export * from "./wiki/document";
+export * from "./wiki/folder";
+```
+
+`ai/chat`、`ai/model-config` 通过深路径直接使用，不在桶里。
+
+### `authApi`（`src/api/auth/auth.ts`）
+
+| 函数 | 端点 |
+| --- | --- |
+| `login(data)` | `/api/auth/login` |
+| `refreshToken(data)` | `/api/auth/refresh` |
+| `getCurrentUser()` | `/api/auth/me` |
+
+### `documentApi`（`src/api/wiki/document.ts`，base `/api/wiki/documents`）
+
+| 函数 | 端点 |
+| --- | --- |
+| `upload(file, folderId)` | `POST /upload`（multipart） |
+| `page(params?)` | `GET /page` |
+| `list(params?)` | `GET /list` |
+| `findOne(id)` | `GET /:id` |
+| `download(id)` | `GET /:id/download` |
+| `delete(id)` | `DELETE /:id` |
+| `process(id)` | `POST /:id/reprocess` |
+| `getContent(id)` | `GET /:id/content` |
+| `updateContent(id, data)` | `PUT /:id/content` |
+| `getChunks(id)` | `GET /:id/chunks` |
+| `deleteChunks(id)` | `DELETE /:id/chunks` |
+
+### `folderApi`（`src/api/wiki/folder.ts`，base `/api/wiki/folders`）
+
+`findOne` / `tree` / `page` / `create` / `update` / `delete` / `getPermissions` / `setPermissions` / `list` 等。
+
+### `departmentApi` / `roleApi` / `userApi`
+
+形态类似。`userApi` 额外有 `resetPassword`、`uploadAvatar`、`changePassword`、`updateProfile`。
+
+### `queueApi`（`src/api/system/queue.ts`）
+
+| 函数 | 端点 |
+| --- | --- |
+| `getStats(queue="default")` | `GET /stats` |
+| `listTasks(queue, state, pageSize, page)` | `GET /tasks` |
+
+### `ai/chat.ts`（不走 `request`）
+
+```ts
+chatStream(
+  params: { query; folder_id?; document_id? },
+  onMessage: (event: StreamChunkEvent) => void,
+  onComplete?, onError?
+)
+```
+
+原生 `fetch` POST `/api/ai/chat`，按 `data:` 行解析 SSE。事件类型：`stream_chunk` / `tool_result_chunk` / `message` / `tool_result` / `action` / `error`，结束帧 `data: [DONE]`。
+
+### `ai/model-config.ts`（带 React Query hooks）
+
+内部 `api` 对象封装 `platforms` / `models` CRUD，导出 hooks：`useModelPlatforms` / `useAIModels` / `useCreateAIPlatform` / `useDeleteAIPlatform` / `useUpdateAIPlatformConfig` / `useCreateAIModel` / `useDeleteAIModel` / `useUpdateAIModel` / `useSyncModels`。`syncModels` 会归一化 PascalCase 字段（`Synced` → `synced` 等）。另保留几个兼容旧名字的别名（`useModelProviderAccounts` 等），新代码请用新名字。
+
+## 组件分层
+
+### `src/components/ui/` — 39 个 shadcn / Radix 基础组件
+
+`button` / `card` / `dialog` / `popover` / `select` / `tabs` / `tooltip` / `sonner` / `theme-provider` 等，按需 import。
+
+### `src/components/sag-ui/` — SAG Wiki 业务组件
+
+桶文件导出：`ConfirmDialog`、`CustomError`、`DataTable`、`Pagination`、`SagPage`、`Tree`、`TreeSelect`（`SagColorPanel` 不在桶里，按需深路径引用）。
+
+- `SagPage`：标准页壳（标题 / 描述 / 图标 / 操作区 / 可滚动内容）。
+- `DataTable<T>`：基于 `@tanstack/react-table`，支持骨架、空态、手写分页、行点击 / `rowClassName`。
+- `Tree<T>` / `TreeSelect<T>`：通用递归树，Popover combobox 形态。
+- `ConfirmDialog`：基于 AlertDialog，支持异步 `onConfirm`。
+- `CustomError`：错误屏（大号 code、副标题、Back/Home）。
+- `Pagination`：页大小 + 上下页按钮。
+
+### `src/components/ai-elements/`
+
+约 50 个 AI 渲染原子组件（`agent` / `artifact` / `attachments` / `code-block` / `conversation` / `message` / `sources` / `tool` / `transcription` / `voice-selector` 等）。无业务逻辑，结构与上游一致。
+
+### `src/components/theme-provider.tsx`
+
+`<ThemeProvider>`：`useEffect` 中 `initializeTheme()` + `useThemeSync()`。挂在 `main.tsx` 的 `QueryClientProvider` 内层。
+
+## 全局 hooks
+
+`src/hooks/` 下两个文件：
+
+- `use-mobile.ts` → `useIsMobile()`：基于 `window.matchMedia("(max-width: 767px)")`。
+- `use-theme.ts` → `useThemeSync()` / `initializeTheme()`：读 `useAppStore.theme`，把 `"system"` 解析为当前 `prefers-color-scheme`。
+
+页面内部的 `useEditorPageSetup`、`useAgentChat` 等放在 `src/pages/<page>/_hooks/`，不进全局。
+
+## 页面实现要点
+
+- `pages/login/index.tsx`：营销 + 登录分屏，4 秒自动轮播 4 张文案。
+- `pages/login/login-form.tsx`：登录成功后 `setTokens + setUser + navigate("/")`。
+- `pages/dashboard/index.tsx`：当前消费 `src/app/dashboard/data.json` 静态数据演示。
+- `pages/wiki/tiptap-editor/index.tsx`：Tiptap 3 + `Markdown` 扩展，2s 防抖自动保存；URL `?docId` 决定打开哪个文档。
+- `pages/system/queue/index.tsx`：默认 5 秒自动轮询 `getStats` + `listTasks`。
+- `pages/system/agent/index.tsx`：使用 `pages/system/agent/_hooks/agent-chat.ts`（基于 `sseRequest`）。
+
+## package.json scripts
+
+```json
+{
+  "dev": "vite",
+  "build": "tsc -b && vite build",
+  "lint": "oxlint .",
+  "lint:fix": "oxlint . --fix && oxfmt --write .",
+  "lint:style": "stylelint \"src/**/*.css\"",
+  "lint:type": "tsc --noEmit",
+  "fmt": "oxfmt --write .",
+  "fmt:check": "oxfmt --check .",
+  "test": "vitest",
+  "test:run": "vitest run",
+  "preview": "vite preview"
+}
+```
+
+工具链：`oxlint` + `oxfmt`（lint/format）、`stylelint`（CSS）、`tsc --noEmit`（类型）。
+
+## 测试
+
+- 配置：`vite.config.ts` 中 `test: { environment: "jsdom", setupFiles: "./src/test/setup.ts" }`（**未开 `globals: true`**，测试文件需显式从 `"vitest"` import `describe` / `it` / `expect` / `vi`）。
+- `src/test/setup.ts` 注入 `@testing-library/jest-dom/vitest`，polyfill `Element.prototype.scrollIntoView` 与 `window.matchMedia`，并 `afterEach(cleanup)`。
+- 测试文件命名：`*.test.tsx`，与源码同目录。
+- 现有测试覆盖：`src/test/smoke.test.tsx`、`components/sag-ui/tree-select`、`pages/login`、`pages/wiki/folders/_components` 的 `DocumentCard` / `FolderCard` / `FolderDetailPanel` / `ItemGrid` / `UploadDialog`、`pages/wiki/tiptap-editor` 的 `CanvasTiptapPage` / `EditorCatalog` / `EditorFooter` / `EditorToolbar`。
+- Mock 模式：
+  - `vi.mock("@/api/wiki/document", async () => { ... vi.importActual(...) })`。
+  - `vi.hoisted(() => ({ ... }))` + `vi.mock` 工厂。
+  - `vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }))`。
+  - `vi.mock("@tanstack/react-router", ...)`。
+  - `vi.stubGlobal("ResizeObserver", ...)`。
+  - **不**使用 MSW 或 axios-mock-adapter，所有拦截都在模块级。
+
+## 开发约束
+
+- 不要手改 `src/routeTree.gen.ts`；改完路由文件让 vite 重新生成。
+- 不要在 axios 调用处直接 `c.response.data`，所有解包走 `request` / `unwrap`，失败由拦截器统一处理。
+- 新增 API 模块：放 `src/api/<domain>/`，与后端 `app/<domain>` 对齐；类型同步从后端 payload 引入。
+- SSE 一律用 `src/api/ai/chat.ts` 或 `src/utils/request/sse.ts`，不走 axios。
+- 修改后跑 `pnpm lint:type` 与 `pnpm test:run`，再考虑 `pnpm build`。

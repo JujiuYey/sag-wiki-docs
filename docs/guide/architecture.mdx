@@ -45,16 +45,25 @@ SAG Wiki 将知识管理、异步文档处理和检索问答拆成明确的服�
 
 ## 代码边界
 
-```text
-sag-wiki/
-├── web/       # React 前端应用
-├── server/    # Go API、业务模块与基础设施适配
-└── docs/      # 设计记录和实现计划
+SAG Wiki 现在拆分为三个独立仓库，每个仓库只包含自身的代码与配置：
 
-sag-wiki-docs/
-├── docs/      # Rspress 页面内容
-├── theme/     # 文档站主题
-└── .github/   # GitHub Pages 部署
+```text
+sag-wiki-server/         # Go API、业务模块与基础设施适配
+├── main.go              # 加载 .env、初始化基础设施、启动 worker 和 Fiber
+├── router/router.go     # /api 聚合路由
+├── app/{ai,file,system,wiki}/
+├── infrastructure/{database,storage,queue,qdrant}/
+├── common/ config/ middleware/ utils/
+└── migrations/{system,wiki,ai}/
+
+sag-wiki-app/            # React 前端应用
+├── src/{routes,pages,api,components,layout,stores,hooks,utils,lib,types}/
+└── vite.config.ts package.json .env.example
+
+sag-wiki-docs/           # Rspress 文档站（独立部署到 GitHub Pages）
+├── docs/                # 页面内容与首页
+├── theme/               # 自定义主题
+└── .github/workflows/   # GitHub Pages 部署
 ```
 
-后端按 `app/{domain}` 组织业务模块，公共基础设施放在 `infrastructure/`，HTTP 聚合入口位于 `server/router/router.go`。
+后端按 `app/{domain}` 组织业务模块，公共基础设施放在 `infrastructure/`，HTTP 聚合入口位于 `sag-wiki-server/router/router.go`。前端按 `src/{routes,pages,api,components}` 分层，HTTP 客户端封装在 `src/utils/request/`。

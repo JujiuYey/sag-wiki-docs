@@ -1,0 +1,25 @@
+---
+title: 备份与恢复
+description: PostgreSQL、MinIO、Redis、Qdrant 的备份策略与恢复流程。
+---
+
+# 备份与恢复
+
+> TODO：补充 `pg_dump` / `mc` / `qdrant snapshot` 实际命令示例与恢复演练清单。
+
+## 备份策略
+
+- PostgreSQL：每日逻辑备份（`pg_dump`）+ WAL 归档。
+- MinIO：`mc mirror` 或桶级 replication。
+- Redis：按需 RDB 快照；AOF 按需开启。
+- Qdrant：Collection 级 snapshot API。
+
+## 备份文件保留
+
+- 至少保留 7 天本地 + 1 个月异地副本。
+- 备份文件名带时间戳与生成节点标识。
+
+## 恢复演练
+
+- 定期在测试环境验证 `pg_dump`、`qdrant snapshot` 恢复可用。
+- 验证任务队列与文件引用一致性（任务可重跑）。

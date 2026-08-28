@@ -1,0 +1,27 @@
+---
+title: 测试
+description: 前端 Vitest 与后端 Go test 的组织、运行与新增测试的约定。
+---
+
+# 测试
+
+> TODO：补充覆盖率目标、CI 集成流程与典型 mock 模式。
+
+## 前端 Vitest
+
+- 配置位于 `vite.config.ts`。
+- 全局 setup 在 `src/test/`。
+- 页面级测试示例：`src/pages/login/index.test.tsx`。
+- 命令：`pnpm test:run`、`pnpm test`（watch）。
+
+## 后端 Go test
+
+- 与源码同包同目录，文件名 `*_test.go`。
+- 已覆盖：`app/wiki/handlers/document_test.go`。
+- 命令：`go test ./...`。
+
+## 新增测试 checklist
+
+- 接口变更：同步增加 handler/repository 测试。
+- 页面变更：覆盖关键交互（输入、提交、错误路径）。
+- 不要断言内部实现细节（私有函数），优先断言可观察行为。

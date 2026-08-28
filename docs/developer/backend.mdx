@@ -1,0 +1,204 @@
+---
+title: 后端架构
+description: Go + Fiber + Bun 的领域模块、基础设施适配、中间件与任务队列。
+---
+
+# 后端架构
+
+代码仓库：`sag-wiki-server/`。本页描述真实目录结构、HTTP 入口、领域划分与基础设施适配，便于新成员上手与跨仓改动时对齐边界。
+
+## 技术栈
+
+- Go 1.25.3
+- Fiber v2（含 fasthttp 的 `SetBodyStreamWriter`，用于 SSE）
+- Bun（PostgreSQL ORM）
+- Redis / Asynq（异步任务）
+- MinIO（对象存储）
+- Qdrant（向量检索）
+- CloudWeGo Eino + `eino-adk`（Agent 与工具调用）
+- JWT（HS256）
+
+## 顶层目录
+
+```text
+sag-wiki-server/
+├── main.go                   # 加载 .env、初始化基础设施、启动 worker 与 Fiber
+├── router/router.go          # /api 聚合路由、CORS、错误处理
+├── app/
+│   ├── ai/                   # chat、retrieval、embedding、chunker、模型配置、tools
+│   ├── file/                 # MinIO 文件下载与预览代理
+│   ├── system/               # auth、user、role、department、queue
+│   └── wiki/                 # documents、folders、permissions
+├── infrastructure/
+│   ├── database/             # Bun DatabaseService + repository 注册
+│   ├── storage/              # MinIOService
+│   ├── queue/                # TaskQueue + TaskWorker
+│   └── qdrant/               # Qdrant client、EnsureCollection、ChunkDAO
+├── common/                   # response、pagination、option 等公共类型
+├── config/                   # database、storage、queue、qdrant 配置读取
+├── middleware/               # AuthMiddleware、RoleMiddleware、OptionalAuthMiddleware
+├── utils/                    # env、jwt、model 凭据 AES-GCM 加解密
+├── migrations/
+│   ├── system/               # 用户、角色、部门
+│   ├── wiki/                 # 文件夹、文档、授权
+│   └── ai/                   # 会话、消息、provider、models
+└── Taskfile.yml
+```
+
+## 启动流程（`main.go`）
+
+`main.go` 串起整条启动链：
+
+1. `godotenv.Load` 读 `.env`。
+2. `config.LoadXxx` 读数据库、MinIO、Redis、Qdrant 配置。
+3. 初始化 `database.DatabaseService`、`storage.MinIOService`、`queue.TaskQueue` + `queue.NewTaskWorker`。
+4. `infrastructure/qdrant.NewQdrantClient` 自检并 `EnsureCollection`。
+5. 构造 `service.NewEmbeddingService`、`service.NewRetrievalService`、`service.NewDocumentProcessor`。
+6. `ai.NewAgentWithSystemTools` 懒加载；`ChatHandler` 持有 runner，运行时按需 `ensureAgent`。
+7. `router.SetupRouter(...)` 返回 Fiber app；`app.Listen(":8080")`。
+8. Asynq Worker 与 Fiber 并发运行（`go srv.Run` + `worker.Run`）。
+
+任一基础设施连接失败会阻断启动。
+
+## HTTP 入口（`router/router.go`）
+
+`SetupRouter(dbService, minioService, taskQueue, chunkDAO, retrievalService) *fiber.App`：
+
+- 全局中间件：`recover` → `logger` → `cors`（`AllowOrigins: "http://localhost:5200"`）。
+- `api := app.Group("/api")`。
+- 公开挂载（无 Auth）：
+  - `app/file/router.SetupFileRoutes(api.Group("/"))` → `/files/*filepath`、`/preview/*filepath`。
+  - `app/system/router.SetupAuthRoutes(api.Group("/"))` → `/auth/login`、`/auth/refresh-token`。
+- 受保护 `protected := api.Group("/")`，统一挂 `middleware.AuthMiddleware()`：
+  - `/wiki/documents`、`/wiki/folders`
+  - `/system/queue`、`/system/department`、`/system/role`、`/system/user`
+  - `/ai/platforms`、`/ai/models`
+  - `/ai/chat`（SSE）
+- 管理员 `admin := api.Group("/admin")`，挂 `AuthMiddleware` + `RoleMiddleware("admin")`。当前空。
+
+完整接口清单与请求体见 [API 约定](./api-conventions)。
+
+## 领域模块
+
+每个领域都遵循 `router → handlers → repository / service → models / infrastructure` 的分层。新增功能请按既有目录补齐文件，不要把业务逻辑塞进 `main.go` 或 `infrastructure/`。
+
+### `app/ai/` — RAG、模型、Agent
+
+| 子目录 | 关键文件 | 职责 |
+| --- | --- | --- |
+| `handlers/` | `chat.go` | SSE Chat，处理检索增强、`writeAgentStreamSSE` 输出 |
+| | `model_config.go` | `ai_model_config` 旧表 CRUD + SetDefault |
+| | `model_resources.go` | `ai_model_providers` / `ai_models` 新表 CRUD + 远端同步 |
+| `model/` | `agent.go` | `adk.ChatModelAgent` 组装 + AgentRunner 包装 |
+| | `chat.go` | `openai.NewChatModel` / `NewChatModelByID` |
+| `models/db/` | `model_config.go`、`model.go`、`model_provider.go` 等 | Bun models |
+| `models/payload/` | `*.go` | 请求/响应 DTO |
+| `repository/` | `model_config.go`、`model_resources.go`、`agent_session.go`、`agent_message.go`、`rag_session.go`、`rag_message.go` | 持久化 |
+| `router/` | `chat.go`、`model_config.go` | 路由注册 |
+| `service/` | `chunker.go` | Semantic Chunker，详见 [RAG 链路](./rag-pipeline#切片semantic-chunker) |
+| | `document_processor.go` | `ProcessDocument` / `ReprocessDocument` |
+| | `embedding.go` | `GetEmbedding` / `BatchEmbeddings` / `CallEmbeddingAPI` |
+| | `model_credentials.go` | Provider API Key 的 AES-GCM 加解密（密钥来自 `AI_MODEL_ENCRYPTION_KEY` 或 `JWT_SECRET`） |
+| | `retrieval.go` | `Search` / `SearchRequest` / `SearchResult` |
+| `tools/` | `system.go` | 15 个用户/部门/角色工具，`utils.InferTool` 注册 |
+
+### `app/file/` — 文件代理
+
+| 子目录 | 关键文件 | 职责 |
+| --- | --- | --- |
+| `handlers/` | `file.go` | `GetFile`（`io.Copy` 流式代理 MinIO）、`PreviewFile` |
+| `router/` | `file.go` | 公开挂载 |
+
+### `app/system/` — 用户、角色、部门、队列
+
+| 子目录 | 关键文件 | 职责 |
+| --- | --- | --- |
+| `handlers/` | `auth.go` | Login / RefreshToken，参见 [API 约定 §鉴权](./api-conventions#鉴权) |
+| | `department.go` | 部门树、列表、选项、搜索、用户关联 |
+| | `queue.go` | Asynq inspector 状态查询 |
+| | `role.go` | 角色 CRUD |
+| | `user.go` | 用户 CRUD、改密、重置密码、上传头像、`/me` |
+| `models/db/` | `user.go`、`department.go`、`role.go`、`user_role.go`、`user_department.go` | Bun models |
+| `models/payload/` | `auth.go`、`user.go`、`role.go`、`department.go` | 请求/响应 DTO |
+| `repository/` | `user.go`、`role.go`、`department.go` | `userRepo.GetUserRoles`、`SetDefaultDepartment` 等 |
+| `router/` | `*.go` | 各自领域路由 |
+
+### `app/wiki/` — 文档、文件夹、权限
+
+| 子目录 | 关键文件 | 职责 |
+| --- | --- | --- |
+| `handlers/` | `document.go` | 上传、列表、详情、内容读写、切片查询、`Reprocess`（投递任务） |
+| | `document_test.go` | Go 单元测试样例（基于 stub repository） |
+| | `folder.go` | 文件夹 CRUD、树、权限读写 |
+| `models/db/` | `document.go`、`folder.go`、`folder_permission.go` | Bun models |
+| `models/payload/` | `document.go`、`folder.go` | 请求/响应 DTO |
+| `repository/` | `document_repo.go` | CRUD、`UpdateStatus`、`UpdateFileSize`、`GetDocumentsByFolderIDs` |
+| | `folder.go` | 含 `GetAllSubFolderIDs` 的递归 CTE |
+| | `folder_expander.go` | `ExpandAndFilter`：子树 + 权限过滤 |
+| | `folder_permission.go` | `BatchCheckPermissions`、`FindByFolderID` |
+| `router/` | `document.go`、`folder.go` | 路由注册 |
+
+## 基础设施适配（`infrastructure/`）
+
+| 目录 | 关键内容 |
+| --- | --- |
+| `database/` | `DatabaseService`：持有 Bun `*sql.DB`、初始化事务辅助、注册 repositories |
+| `storage/` | `MinIOService`：上传 / 下载 / 流式 `GetFileContent` / `DeleteFile` |
+| `queue/` | `TaskQueue`（生产者，`EnqueueDocumentProcess`）、`TaskWorker`（消费者，`HandleDocumentProcess`） |
+| `qdrant/` | `QdrantClient`（建集合）、`ChunkDAO`（`UpsertChunks` / `SearchChunksByVector` / `DeleteChunksByDocumentID`） |
+
+约定：基础设施目录只放外部系统适配（客户端构造、健康检查、序列化协议），不写业务查询。新增业务 SQL 一律放 `app/{domain}/repository/`。
+
+## 中间件（`middleware/`）
+
+- `AuthMiddleware()`：校验 `Authorization: Bearer <jwt>`，写入 `c.Locals(user_id, username, email, roles)`。
+- `OptionalAuthMiddleware()`：同上但失败仍 `c.Next()`（当前未挂载）。
+- `RoleMiddleware(role string)`：基于 `c.Locals("roles")` 检查。
+
+错误状态码与文案统一在中间件内返回，遵循 [API 约定 §鉴权](./api-conventions#鉴权)。
+
+## 公共类型（`common/`）
+
+- `common/response.Response[T]`：统一包络 `{Code, Data, Message}`；`Code: 0` 成功、`-1` 通用失败。Fiber 快捷方法 `SuccessCtx` / `FailCtx` / `BadRequestCtx` / `UnauthorizedCtx` / `ForbiddenCtx` / `NotFoundCtx` / `InternalServerCtx`。
+- `common/pagination.PaginationRequest{Page, PageSize}` 与 `PaginationResponse[T]{Data, Total, Page, PageSize, TotalPage}`，最大页大小 `100`。
+- `common/option.Option{Value, Label, Description}`：下拉选项通用结构。
+
+## 配置（`config/`）
+
+按子系统拆 `database.go`、`minio.go`、`redis.go`、`qdrant.go`。运行时通过 `utils.GetEnv(key, defaultValue)` 读取，配合 `.env` 与 `.env.example`。
+
+## 任务队列（`infrastructure/queue/`）
+
+详见 [RAG 链路 §任务队列](./rag-pipeline#任务队列)。当前只有 `document:process` 一种任务类型；Worker `Concurrency: 10`，默认队列；`MaxRetry(3)`。
+
+## 迁移（`migrations/`）
+
+| 子目录 | 主要表 |
+| --- | --- |
+| `system/001_schema.sql` | `sys_users`、`sys_roles`、`sys_departments`、`sys_user_roles`、`sys_user_departments`（含 3 用户 / 3 角色 / 3 部门种子） |
+| `wiki/001_schema.sql` | `wiki_folders`、`wiki_folder_permissions`、`wiki_documents` |
+| `ai/001_schema.sql` | `ai_agent_sessions`、`ai_agent_messages`、`ai_rag_sessions`、`ai_rag_messages` |
+| `ai/002_schema.sql` | `ai_model_providers`、`ai_models`（带 IF NOT EXISTS，可重复执行） |
+
+新增表请加在对应子目录，文件名按 `00x_*.sql` 递增；保证可重复执行或明确依赖顺序。
+
+## 常用命令
+
+```bash
+go mod download
+go test ./...
+go vet ./...
+gofmt -w <changed-go-files>
+go run main.go
+task dev
+task build
+task tidy
+```
+
+## 已知不变量
+
+- `router.go` 中 CORS `AllowOrigins` 硬编码 `localhost:5200`，跨域部署前必须修改。
+- `EmbeddingService` 与 `ChatHandler` 读旧表 `ai_model_config`，新增 Provider / Model 走新表（`ai_model_providers` / `ai_models`）时不会自动生效，需要补读取逻辑或在文档里说明手动回填。
+- `EmbeddingService.BatchEmbeddings` 已实现但处理器未调用，目前是逐 chunk 同步嵌入。
+- `DocumentHandler.Upload` 只写 `pending`，不自动投递任务；要触发处理需客户端再调 `:id/reprocess`。
+- `app/admin` 分组目前为空；新增管理员专用接口请挂在这里。

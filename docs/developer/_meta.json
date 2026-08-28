@@ -1,0 +1,37 @@
+[
+  {
+    "type": "file",
+    "name": "overview",
+    "label": "代码边界"
+  },
+  {
+    "type": "file",
+    "name": "frontend",
+    "label": "前端架构"
+  },
+  {
+    "type": "file",
+    "name": "backend",
+    "label": "后端架构"
+  },
+  {
+    "type": "file",
+    "name": "rag-pipeline",
+    "label": "RAG 链路"
+  },
+  {
+    "type": "file",
+    "name": "data-model",
+    "label": "数据模型与迁移"
+  },
+  {
+    "type": "file",
+    "name": "api-conventions",
+    "label": "API 约定"
+  },
+  {
+    "type": "file",
+    "name": "testing",
+    "label": "测试"
+  }
+]

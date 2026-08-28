@@ -2,7 +2,11 @@
 
 SAG Wiki 的项目介绍与使用文档站，使用 [Rspress](https://rspress.dev/) 构建，并通过 GitHub Pages 发布。
 
-主项目：[JujiuYey/sag-wiki](https://github.com/JujiuYey/sag-wiki)
+SAG Wiki 由三个独立仓库组成：
+
+- 前端：[JujiuYey/sag-wiki-app](https://github.com/JujiuYey/sag-wiki-app)
+- 后端：[JujiuYey/sag-wiki-server](https://github.com/JujiuYey/sag-wiki-server)
+- 文档：[JujiuYey/sag-wiki-docs](https://github.com/JujiuYey/sag-wiki-docs)（当前仓库）
 
 ## 本地开发
 

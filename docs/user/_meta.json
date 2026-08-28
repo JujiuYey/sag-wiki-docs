@@ -1,0 +1,32 @@
+[
+  {
+    "type": "file",
+    "name": "overview",
+    "label": "功能总览"
+  },
+  {
+    "type": "file",
+    "name": "knowledge-base",
+    "label": "知识库管理"
+  },
+  {
+    "type": "file",
+    "name": "rag-chat",
+    "label": "知识问答"
+  },
+  {
+    "type": "file",
+    "name": "model-config",
+    "label": "模型与集合"
+  },
+  {
+    "type": "file",
+    "name": "system-admin",
+    "label": "系统管理"
+  },
+  {
+    "type": "file",
+    "name": "queue",
+    "label": "任务队列"
+  }
+]

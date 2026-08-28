@@ -1,0 +1,110 @@
+---
+title: 代码边界
+description: 三仓关系、模块边界与跨仓改动规范。
+---
+
+# 代码边界
+
+本页面向需要同时碰前后端与文档的开发者。目标是让任一改动都能在正确仓库、正确层级落地，避免跨仓搬运或绕过边界。
+
+## 仓库拓扑
+
+三个独立仓库，互不为 Git submodule，独立发版、独立 CI：
+
+```text
+sag-wiki-server/    # Go API + Asynq Worker + Bun models + 迁移
+sag-wiki-app/       # React Web 前端
+sag-wiki-docs/      # Rspress 文档站（独立部署到 GitHub Pages）
+```
+
+仓内还会有同级 README 与 AGENTS.md 描述本地约定，本页只描述跨仓共识。
+
+## 后端分层
+
+```text
+main.go                       # 加载 .env、初始化基础设施、启动 worker 与 Fiber
+router/router.go              # /api 聚合路由
+app/{ai,file,system,wiki}/    # 业务模块
+  ├── router/                 # 路由注册
+  ├── handlers/               # HTTP 输入输出
+  ├── repository/             # 持久化
+  ├── models/{db,payload}/    # Bun model + DTO
+  ├── service/                # AI 编排 / 业务服务（仅 ai）
+  ├── model/                  # Eino agent / chat model（仅 ai）
+  └── tools/                  # LLM 工具（仅 ai）
+infrastructure/               # 仅放外部系统适配
+  ├── database/               # Bun DB service
+  ├── storage/                # MinIO
+  ├── queue/                  # Asynq producer + worker
+  └── qdrant/                 # Qdrant client + ChunkDAO
+common/                       # response、pagination、option
+config/ middleware/ utils/
+migrations/{system,wiki,ai}/
+```
+
+- 路由只挂 handler，不写业务查询。
+- handler 只做 HTTP 输入输出与状态码编排。
+- 业务规则放 service（ai）或 repository 扩展方法。
+- 基础设施目录只放外部 SDK / 协议适配，不写业务 SQL。
+- 详细目录与文件清单见 [后端架构](./backend)。
+
+## 前端分层
+
+```text
+src/
+├── routes/             # 文件路由（routeTree.gen.ts 自动生成）
+├── pages/              # 页面业务实现（每页配 _components / _hooks / _shared）
+├── api/                # 按域封装的请求模块
+├── components/{ui,sag-ui,ai-elements}/
+├── layout/ stores/ hooks/
+├── utils/request/      # axios 拦截器 + SSE 助手
+├── lib/ types/ assets/
+└── test/
+```
+
+- 路由文件只挂载页面，不写业务；保护布局在 `_layout.tsx`。
+- 请求层统一过 `request`，失败处理在拦截器；SSE 不走 axios。
+- 业务组件放 `pages/<page>/_components/`，通用业务组件放 `sag-ui/`，AI 渲染原子组件放 `ai-elements/`。
+- API 模块按后端领域命名（`api/{auth,ai,system,wiki}`），与后端 `app/{system,wiki,file}` 一一对应。
+
+## 文档
+
+- 文档仓库不向其他两个仓库反向 import；只消费代码事实。
+- 路径、命令、架构图必须以三仓真实结构为准。
+- 部署后由 GitHub Actions 发布到 `https://jujiuyey.github.io/sag-wiki-docs/`。
+- 本地 `pnpm dev` 起 Rspress，预览实时生效。
+
+## 跨仓改动 checklist
+
+API 变更：
+
+1. 后端：改 `app/<domain>/handlers/` 与 `router/`，必要时更新 payload / Bun model。
+2. 前端：同步 `src/api/<domain>/` 与 `src/types/`，跑 `pnpm lint:type`。
+3. 文档：同步 [API 约定](./api-conventions) 与 [RAG 链路](./rag-pipeline) 内的相关章节。
+
+数据迁移：
+
+1. 在 `migrations/<domain>/` 新增 `00x_*.sql`，保证可幂等（`IF NOT EXISTS` / `ON CONFLICT`）或写明依赖顺序。
+2. 同步 Bun model 与 repository。
+3. 同步前端类型。
+4. 更新 [数据模型与迁移](./data-model)。
+
+新依赖：
+
+1. 后端：`go get`，更新 `go.mod` / `go.sum`；`task tidy`。
+2. 前端：`pnpm add`，确认 `package.json` 与 `pnpm-lock.yaml`。
+3. 文档：仅在涉及工具链 / 命令时更新本页或 [快速开始](../guide/getting-started)。
+
+基础设施变更（如新增存储、改 CORS、改鉴权）：
+
+1. 后端改 `router/router.go`、`config/`、`.env.example`、`middleware/`。
+2. 文档同步 [环境变量](../ops/configuration)、[API 约定](./api-conventions)、[后端架构](./backend)。
+3. 前端若有配置开关（`VITE_*`），同步 `.env.example` 与请求层。
+
+## 不要做
+
+- 不要把前端代码放 `sag-wiki-server/`，反之亦然。
+- 不要在文档仓里写需要被前端 import 的代码（不会被构建拾取）。
+- 不要跨仓搬运代码或合并仓库；如确需重组，请先确认再动。
+- 不要修改 `src/routeTree.gen.ts` 或 `doc_build/`、`dist/` 等生成产物。
+- 不要把业务 SQL / 业务逻辑放 `infrastructure/` 或 `main.go`。

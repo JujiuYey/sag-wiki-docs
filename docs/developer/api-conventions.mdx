@@ -1,0 +1,224 @@
+---
+title: API 约定
+description: REST 接口与 SSE 流式接口的请求、响应、错误与鉴权约定。
+---
+
+# API 约定
+
+本页基于 `sag-wiki-server/router/router.go` 与各领域 handler / middleware 的真实实现。开发新接口或客户端调用前，请优先对齐这里的约定。
+
+## 基础
+
+- 基础路径：所有业务接口挂在 `/api` 下，由 `router/router.go` 中 `api := app.Group("/api")` 创建。
+- 全局中间件：`recover` → `logger` → `cors`。
+- CORS 配置硬编码：
+
+  ```ts
+  {
+    AllowOrigins: "http://localhost:5200",
+    AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
+    AllowHeaders: "Origin,Content-Type,Accept,Authorization",
+    AllowCredentials: true,
+  }
+  ```
+
+  部署到非本地环境时必须修改 `AllowOrigins` 为实际前端域名。
+
+- 错误响应：统一包络见 `common/response/response.go`。失败返回 `Response[any]{Code: -1, Message: ...}`；Fiber 层 `customErrorHandler` 会把 `*fiber.Error` 转成 `{ "error": <message> }`。注意：handler 层走 `common/response` 时返回 `code/message/data` 三字段；被中间件 / Fiber 兜住的 panic 与 404/500 走 `customErrorHandler`，只返回 `error` 字段。新接口应优先用 `common/response.SuccessCtx` / `FailCtx` 系列。
+
+## 鉴权
+
+- Token 类型：HS256 JWT，密钥来自 `JWT_SECRET`。
+- Access Token TTL：`2h`；Refresh Token TTL：`7 * 24h`。
+- Claims：`{ user_id, username, email, roles[], exp, iat, nbf }`。
+- Refresh Token 只携带 `Subject = userID`，不能用于受保护接口。
+
+### `AuthMiddleware`（`middleware/auth.go`）
+
+1. 读取 `Authorization`；缺失返回 `401 Authorization header required`。
+2. 拆分 `Bearer <token>`；格式错误返回 `401 Invalid authorization header format`。
+3. `utils.ValidateAccessToken`；失败返回 `401 Invalid or expired token`。
+4. 通过校验后写入 `c.Locals`：`user_id` / `username` / `email` / `roles`（`[]string`）。
+
+另有 `OptionalAuthMiddleware` 用于匿名可接受的接口（当前未挂载）。
+
+### `RoleMiddleware(role string)`
+
+- 从 `c.Locals("roles")` 取角色列表，类型断言 `[]string`。
+- 不匹配返回 `403 Insufficient permissions`。
+- `router/router.go` 已经预留了 `/admin` 分组（同时挂 `AuthMiddleware` 与 `RoleMiddleware("admin")`），目前为空。
+
+## 公开接口
+
+不需要 Token，由 `app.Group("/api")` 直接挂载：
+
+| 方法 | 路径 | Handler | 说明 |
+| --- | --- | --- | --- |
+| POST | `/api/auth/login` | `AuthHandler.Login` | 用户名 + 密码换 Token |
+| POST | `/api/auth/refresh-token` | `AuthHandler.RefreshToken` | Refresh Token 换新 Access Token |
+| GET | `/api/files/*filepath` | `FileHandler.GetFile` | 代理 MinIO 流式返回 |
+| GET | `/api/preview/*filepath` | `FileHandler.PreviewFile` | 同上，预览场景 |
+
+### `POST /api/auth/login`
+
+请求体（`LoginRequest`）：
+
+```json
+{
+  "username": "必填，按 sys_users.username 精确匹配",
+  "password": "必填"
+}
+```
+
+返回 `LoginResponse`：
+
+```json
+{
+  "access_token": "...",
+  "refresh_token": "...",
+  "user": {
+    "id": "...",
+    "username": "...",
+    "email": "...",
+    "full_name": "string | null",
+    "avatar": "string | null",
+    "status": "active|inactive|suspended",
+    "roles": ["admin", "user"],
+    "primary_department_id": "..."
+  }
+}
+```
+
+错误：
+
+- 用户不存在 → `401 用户不存在`
+- 密码错误 → `401 用户名或密码错误`
+- `status != "active"` → `403 用户账号已禁用`
+
+> 实现层是按 `username` 精确查询（`userRepo.FindByUsername`），不是邮箱。
+
+### `POST /api/auth/refresh-token`
+
+请求体：`{ "refresh_token": "..." }`，返回新 `access_token`（响应体同时有 `refresh_token` 字段但 handler 不重写）。
+
+## 受保护接口
+
+挂在 `protected := api.Group("/")` 下，统一过 `AuthMiddleware`。下表是当前真实注册的完整列表。
+
+### `/api/wiki/documents`（`app/wiki/router/document.go`）
+
+| 方法 | 路径 | Handler |
+| --- | --- | --- |
+| GET | `/list` | `DocumentHandler.FindList` |
+| GET | `/page` | `DocumentHandler.FindPage` |
+| GET | `/:id` | `DocumentHandler.FindOne` |
+| POST | `/upload` | `DocumentHandler.Upload`（写 MinIO + 插入 `pending` 记录，**不自动投递任务**） |
+| POST | `/:id/reprocess` | `DocumentHandler.Reprocess`（投递 `document:process`） |
+| DELETE | `/:id` | `DocumentHandler.Delete` |
+| GET | `/:id/download` | `DocumentHandler.Download`（返回 MinIO 预签名 URL） |
+| GET | `/:id/content` | `DocumentHandler.GetContent` |
+| PUT | `/:id/content` | `DocumentHandler.UpdateContent`（重置 `status=pending`） |
+| GET | `/:id/chunks` | `DocumentHandler.GetChunks`（从 Qdrant 拉 payload） |
+| DELETE | `/:id/chunks` | `DocumentHandler.DeleteChunks` |
+
+### `/api/wiki/folders`（`app/wiki/router/folder.go`）
+
+| 方法 | 路径 | Handler |
+| --- | --- | --- |
+| GET | `/page` | `FolderHandler.FindPage` |
+| GET | `/list` | `FolderHandler.FindList` |
+| GET | `/tree` | `FolderHandler.GetTree` |
+| GET | `/:id` | `FolderHandler.FindOne` |
+| GET | `/:id/permissions` | `FolderHandler.GetPermissions` |
+| POST | `/` | `FolderHandler.Create` |
+| PUT | `/` | `FolderHandler.Update` |
+| PUT | `/:id/permissions` | `FolderHandler.SetPermissions` |
+| DELETE | `/:id` | `FolderHandler.Delete` |
+
+### `/api/system/queue`（`app/system/router/queue.go`）
+
+| 方法 | 路径 | Handler |
+| --- | --- | --- |
+| GET | `/stats` | `QueueHandler.GetStats` |
+| GET | `/tasks` | `QueueHandler.GetTasks` |
+
+`/stats` 入参 `queue=default`（默认），返回 `{ Pending, Active, Scheduled, Retry, Archived, Completed }`。`Completed` 来自 Asynq inspector 的 `Processed`。
+
+`/tasks` 入参：
+
+```text
+queue=default              # 默认
+state=pending|active|scheduled|retry|archived
+page_size=20  page=0
+```
+
+返回 `[]TaskInfo{ID, Type, Payload, Queue, MaxRetry, Retried, LastError, State, NextProcess}`。
+
+### `/api/system/department`、`/system/role`、`/system/user`
+
+`Department`：`/tree` / `/page` / `/options` / `/search` / `/:id` / `/:id/users`，POST `/`、PUT `/`、DELETE `/:id`。
+`Role`：`/page` / `/:id`，POST `/`、PUT `/`、DELETE `/:id`。
+`User`：`/page` / `/me` / `/:id`，POST `/`、PUT `/`、DELETE `/:id`，PUT `/change-password`、POST `/reset-password`、POST `/upload-avatar`。
+
+### `/api/ai/platforms` 与 `/api/ai/models`
+
+新增的 Provider / Model 元数据接口，写入 `ai_model_providers` / `ai_models`（`migrations/ai/002_schema.sql`）。
+
+`/ai/platforms`：`GET /` 列表、`POST /` 新建、`DELETE /:id`、`PUT /:id/config`、`POST /:id/sync-models`。
+`/ai/models`：`GET /` 列表、`POST /` 新建、`PUT /:id`、`DELETE /:id`。
+
+`POST /:id/sync-models` 会调用远端 `${base_url}${model_list_path}` 拉取模型列表，写入 `ai_models` 并更新 `ai_model_providers.last_model_sync_at`。
+
+> 注意：`EmbeddingService` 与 `ChatHandler` 当前仍读旧表 `ai_model_config`，新接口写入的 Provider / Model 不会自动生效，需要在 embedding / chat 路径补读取逻辑。
+
+### `/api/ai/model-config` 与 `/api/ai/collections`
+
+`/ai/model-config` 由 `app/ai/handlers/model_config.go` 暴露，CRUD + `SetDefault`，落表 `ai_model_config`。
+`/ai/collections` 由同一文件暴露，列出当前 Qdrant Collection 状态。
+
+### `POST /api/ai/chat`
+
+SSE 流式接口。详见 [RAG 链路](./rag-pipeline#rag-chat-链路)。
+
+请求体：
+
+```json
+{ "query": "必填", "folder_id": "可选", "document_id": "可选" }
+```
+
+响应：`Content-Type: text/event-stream`，每帧 `data: <json>\n\n`，结束帧 `data: [DONE]\n\n`。
+
+事件类型：
+
+```ts
+type StreamChunkEvent =
+  | { type: "stream_chunk"; content?: string; agent?: string }
+  | { type: "tool_result_chunk"; content?: string; tool_calls?: unknown[]; agent?: string }
+  | { type: "message"; agent?: string; tool_calls?: unknown[] }
+  | { type: "tool_result"; agent?: string; tool_calls?: unknown[] }
+  | { type: "action"; action?: "exit" | "transfer"; content?: string }
+  | { type: "error"; content?: string };
+```
+
+触发条件见 RAG 链路页 `SSE 事件` 表。
+
+## 管理员接口
+
+`router/router.go` 已挂 `/admin` 分组（同时 `AuthMiddleware` + `RoleMiddleware("admin")`），目前为空。新增管理员专用接口时请挂到这里而不是受保护分组，避免逻辑冗余。
+
+## 前端约定
+
+- 普通请求走 `sag-wiki-app/src/utils/request/index.ts`（Axios + 401 刷新 + 错误提示）。
+- SSE 走 `fetch` + `ReadableStream`，参考 `sag-wiki-app/src/api/ai/chat.ts`，**不走 axios**。
+- 新增 API 模块时按域分文件：`src/api/{ai,auth,system,wiki}/*.ts`，与后端 `app/{ai,system,wiki}` 对齐。
+- 类型与后端 payload 同步修改；不要伪造字段。
+
+## 错误排查表
+
+| 现象 | 常见原因 |
+| --- | --- |
+| 401 `Invalid or expired token` | Access Token 过期（>2h）或被篡改；客户端应自动调 `/auth/refresh-token` |
+| 403 `Access denied` / `Insufficient permissions` | `c.Locals("roles")` 缺失或角色不匹配；通常是上游 `AuthMiddleware` 没挂 |
+| 500 `未配置默认模型...` | 没有默认 `ModelConfig`；去 `/ai/model-config` 设置默认 |
+| SSE 提前断开 | 反向代理缓冲或超时；前端需在反向代理关闭缓冲并放宽 SSE 超时 |
+| CORS 预检失败 | `AllowOrigins` 仍写 `localhost:5200`；改 `router/router.go` 重新编译 |

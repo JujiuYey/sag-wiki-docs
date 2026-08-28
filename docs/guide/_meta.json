@@ -8,5 +8,10 @@
     "type": "file",
     "name": "architecture",
     "label": "系统架构"
+  },
+  {
+    "type": "file",
+    "name": "roadmap",
+    "label": "路线图"
   }
 ]

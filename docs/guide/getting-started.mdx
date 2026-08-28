@@ -1,11 +1,11 @@
 ---
 title: 快速开始
-description: 使用 Docker Compose 快速启动 SAG Wiki 的本地基础设施，再运行 Go 服务和 React 前端。
+description: 使用 Docker Compose 快速启动 SAG Wiki 的本地基础设施，再分别启动 Go 后端和 React 前端。
 ---
 
 # 快速开始
 
-这份指南用于本地开发。SAG Wiki 需要 PostgreSQL、Redis、MinIO 和 Qdrant 四个基础设施服务。先启动这些服务，再启动主项目中的 Go API 和 React Web。
+这份指南用于本地开发。SAG Wiki 由三个独立仓库组成：前端 `sag-wiki-app`、后端 `sag-wiki-server`、文档 `sag-wiki-docs`。需要 PostgreSQL、Redis、MinIO 和 Qdrant 四个基础设施服务。先启动这些服务，再分别启动 Go API 和 React Web。
 
 ## 环境要求
 
@@ -17,14 +17,27 @@ description: 使用 Docker Compose 快速启动 SAG Wiki 的本地基础设施�
 
 ## 1. 获取项目
 
+SAG Wiki 现在拆分为三个独立仓库，需要分别克隆。建议把它们放在同一个工作目录下：
+
 ```bash
-git clone https://github.com/JujiuYey/sag-wiki.git
-cd sag-wiki
+mkdir sag-wiki && cd sag-wiki
+git clone https://github.com/JujiuYey/sag-wiki-server.git
+git clone https://github.com/JujiuYey/sag-wiki-app.git
+git clone https://github.com/JujiuYey/sag-wiki-docs.git
+```
+
+后续命令假设工作目录布局如下：
+
+```text
+sag-wiki/
+├── sag-wiki-server/   # Go API
+├── sag-wiki-app/      # React Web
+└── sag-wiki-docs/     # 文档
 ```
 
 ## 2. 启动本地基础设施
 
-在 `sag-wiki` 项目根目录创建 `docker-compose.yml`，内容如下：
+`docker-compose.yml` 不再随任何仓库下发，建议放在工作目录根目录（`sag-wiki/`），便于三个仓库共享同一份基础设施配置。创建 `sag-wiki/docker-compose.yml`，内容如下：
 
 ```yaml
 services:
@@ -116,14 +129,14 @@ docker compose up -d
 
 ## 3. 初始化数据库
 
-迁移文件位于 `server/migrations/`，在主项目根目录执行：
+迁移文件位于 `sag-wiki-server/migrations/`，在工作目录根目录执行：
 
 ```bash
 docker compose exec postgres createdb -U postgres sag_wiki
-docker compose exec -T postgres psql -U postgres -d sag_wiki < server/migrations/system/001_schema.sql
-docker compose exec -T postgres psql -U postgres -d sag_wiki < server/migrations/wiki/001_schema.sql
-docker compose exec -T postgres psql -U postgres -d sag_wiki < server/migrations/ai/001_schema.sql
-docker compose exec -T postgres psql -U postgres -d sag_wiki < server/migrations/ai/002_schema.sql
+docker compose exec -T postgres psql -U postgres -d sag_wiki < sag-wiki-server/migrations/system/001_schema.sql
+docker compose exec -T postgres psql -U postgres -d sag_wiki < sag-wiki-server/migrations/wiki/001_schema.sql
+docker compose exec -T postgres psql -U postgres -d sag_wiki < sag-wiki-server/migrations/ai/001_schema.sql
+docker compose exec -T postgres psql -U postgres -d sag_wiki < sag-wiki-server/migrations/ai/002_schema.sql
 ```
 
 如果数据库已经存在，`createdb` 报错时可以忽略，然后继续执行尚未应用的迁移。
@@ -131,11 +144,11 @@ docker compose exec -T postgres psql -U postgres -d sag_wiki < server/migrations
 ## 4. 配置并启动 Go API
 
 ```bash
-cd server
+cd sag-wiki-server
 cp .env.example .env
 ```
 
-检查 `server/.env` 中的基础设施配置：
+检查 `sag-wiki-server/.env` 中的基础设施配置：
 
 ```dotenv
 DB_HOST=localhost
@@ -161,10 +174,10 @@ API 默认运行在 `http://localhost:8080`。
 
 ## 5. 配置并启动 React 应用
 
-新开一个终端，在主项目根目录执行：
+新开一个终端，回到工作目录根目录：
 
 ```bash
-cd web
+cd sag-wiki-app
 cp .env.example .env
 pnpm install
 pnpm dev

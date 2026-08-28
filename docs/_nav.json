@@ -4,15 +4,119 @@
     "link": "/"
   },
   {
-    "text": "快速开始",
-    "link": "/guide/getting-started"
+    "text": "指南",
+    "type": "dir",
+    "collapsed": false,
+    "items": [
+      {
+        "text": "快速开始",
+        "link": "/guide/getting-started"
+      },
+      {
+        "text": "系统架构",
+        "link": "/guide/architecture"
+      },
+      {
+        "text": "路线图",
+        "link": "/guide/roadmap"
+      }
+    ]
   },
   {
-    "text": "系统架构",
-    "link": "/guide/architecture"
+    "text": "用户手册",
+    "type": "dir",
+    "collapsed": true,
+    "items": [
+      {
+        "text": "功能总览",
+        "link": "/user/overview"
+      },
+      {
+        "text": "知识库管理",
+        "link": "/user/knowledge-base"
+      },
+      {
+        "text": "知识问答",
+        "link": "/user/rag-chat"
+      },
+      {
+        "text": "模型与集合",
+        "link": "/user/model-config"
+      },
+      {
+        "text": "系统管理",
+        "link": "/user/system-admin"
+      },
+      {
+        "text": "任务队列",
+        "link": "/user/queue"
+      }
+    ]
+  },
+  {
+    "text": "开发",
+    "type": "dir",
+    "collapsed": true,
+    "items": [
+      {
+        "text": "代码边界",
+        "link": "/developer/overview"
+      },
+      {
+        "text": "前端架构",
+        "link": "/developer/frontend"
+      },
+      {
+        "text": "后端架构",
+        "link": "/developer/backend"
+      },
+      {
+        "text": "RAG 链路",
+        "link": "/developer/rag-pipeline"
+      },
+      {
+        "text": "数据模型与迁移",
+        "link": "/developer/data-model"
+      },
+      {
+        "text": "API 约定",
+        "link": "/developer/api-conventions"
+      },
+      {
+        "text": "测试",
+        "link": "/developer/testing"
+      }
+    ]
+  },
+  {
+    "text": "运维",
+    "type": "dir",
+    "collapsed": true,
+    "items": [
+      {
+        "text": "环境变量",
+        "link": "/ops/configuration"
+      },
+      {
+        "text": "部署",
+        "link": "/ops/deployment"
+      },
+      {
+        "text": "存储与中间件",
+        "link": "/ops/storage"
+      },
+      {
+        "text": "备份与恢复",
+        "link": "/ops/backup"
+      },
+      {
+        "text": "排错",
+        "link": "/ops/troubleshooting"
+      }
+    ]
   },
   {
     "text": "GitHub",
-    "link": "https://github.com/JujiuYey/sag-wiki"
+    "link": "https://github.com/JujiuYey"
   }
 ]
